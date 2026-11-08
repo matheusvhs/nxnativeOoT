@@ -1,3 +1,5 @@
+> **This is [nxnativeOoT](https://github.com/matheusvhs/nxnativeOoT)**: upstream [nxnative](https://github.com/seedds/nxnative) (base `bd979ced`), plus the Xbox and PlayStation button overlays for Ocarina of Time from [Flavio's fork](https://github.com/flaviopz/nxnative) -- see [docs/oot-buttons.md](docs/oot-buttons.md).
+
 # nxnative
 
 Play your own Nintendo Switch games natively on iPhone and iPad. Bring your game (its NSP files) and your `prod.keys`; one script turns them into an IPA that you sideload.

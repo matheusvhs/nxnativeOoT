@@ -2755,12 +2755,21 @@ def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx, 
     # The launcher settings the IPA carries (dm/games/settings.py), without the iPhone's own switches: the app's settings window and Mac front ends show them (docs/frontends.md)
     settings = work / 'app/launcher.json'; settings.parent.mkdir(parents=True, exist_ok=True)
     run([py, repo / 'dm/games/settings.py', g.id, patched, control or game / 'control.nacp', settings], logs / 'mac_settings.log', env=dict(env, GFXAPI=gfx, SETTINGS_PLATFORM='mac', DM_LANG=lang))
+    # The game's button mods (its profile's button_mods/make_mods.py: the button icons and controller pictures of an Xbox and a PlayStation pad, from the player's RomFS); the host picks one
+    # by the controller connected at start (hle_fs.c). Skipped, with the packages to install, when Python lacks what the generator needs
+    bmods, gdir = None, getattr(g, 'dir', None)
+    gen = gdir / 'button_mods/make_mods.py' if gdir else None
+    if gen and gen.is_file():
+        r = subprocess.run([py, gen, rfs.source(game), work / 'button_mods'], capture_output=True, text=True, env=env)
+        for ln in (r.stdout + r.stderr).strip().splitlines(): say(ln)
+        if r.returncode == 0: bmods = work / 'button_mods'
+        elif r.returncode != 2: raise BuildError(f'button mods failed (exit {r.returncode})')
     cmd = [py, repo / 'dm/mac/pack_app.py', out, '--host', host, '--patched', patched, '--romfs', rfs.source(game), '--msl', lib, '--tables', g.table('shader_map.tsv').parent,
            '--font', font, '--title-id', f'{app:016X}', '--name', name, '--bundle-id', bundle_id, '--lang', lang, '--sign', sign or '-']
     split_pairs = work / 'shader/pso_pairs.tsv'   # the split's copy of pso_pairs.tsv, for a profile without the table (as mac_run's DM_PSO_PAIRS)
     for opt, v in (('--version', version), ('--category', g.get('app_category')), ('--marker', g.get('romfs_marker')), ('--aoc', aoc), ('--icon', icon),
                    ('--pso', pso), ('--pso-pairs', split_pairs if gfx == 'nvn' and not g.table('pso_pairs.tsv').is_file() and split_pairs.is_file() else None),
-                   ('--env-file', Path(os.path.expanduser(env_file)).resolve() if env_file else None), ('--settings', settings)):
+                   ('--env-file', Path(os.path.expanduser(env_file)).resolve() if env_file else None), ('--settings', settings), ('--button-mods', bmods)):
         if v: cmd += [opt, v]
     for n, r in (programs or {}).items(): cmd += ['--program', f'{n}\t{r["patched"]}\t{r["romfs"]}\t{r["msl"]}\t{r["tables"]}\t{r["html"]}']
     if (game / 'html').is_dir(): cmd += ['--html', game / 'html']

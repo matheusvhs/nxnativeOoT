@@ -176,6 +176,35 @@ static const char *fwd_slashes(const char *p, char *buf, size_t n) {
 }
 static int norm_rest(const char *rest, char *out, size_t n);
 static int rom_overlay_path(const mount_t *m, const char *rest, char *out, size_t n);
+// The rom mount's overlay folders: DM_ROMFS_OVERLAY (':' between folders), then a button mod. DM_BUTTON_MODS names a folder holding one RomFS overlay per controller family
+// (xbox/, ps/: a game's button icons and controller pictures redrawn, made by its profile's button_mods); the family of the gamepad connected at start picks one (dm_pad_family,
+// the Mac front end's; other builds have none and keep the game's own buttons), and DM_BUTTONS (or DM_BOTOES) = xbox | ps | nintendo forces it (auto: detect). The mod is picked once.
+__attribute__((weak)) const char *dm_pad_family(void) { return NULL; }   // a front end's own (pad_family_mac.h on the Mac) replaces it; a build without one reads no pad, and the game's own buttons stay
+static int button_family(const char *f) { return f && (!strcmp(f, "xbox") || !strcmp(f, "ps") || !strcmp(f, "nintendo")); }   // the only folders DM_BUTTON_MODS may hold: any other name (a forced value like "../x") is none of it
+static const char *rom_overlay_env(void) {
+    static char mod[1024]; static int done;   // the button mod's folder, picked once (the connected pad and DM_BUTTONS/DM_BOTOES); the manual folders are read as before
+    if (!done) {
+        done = 1;
+        const char *mods = getenv("DM_BUTTON_MODS");
+        const char *want = getenv("DM_BUTTONS"); if (!want || !*want) want = getenv("DM_BOTOES");
+        if (mods && *mods) {
+            int forced = want && *want && strcmp(want, "auto");
+            const char *fam = forced ? (button_family(want) ? want : NULL) : dm_pad_family();
+            if (fam && !button_family(fam)) fam = NULL;   // a front end's dm_pad_family naming another family
+            char dir[1024]; struct stat st;
+            snprintf(dir, sizeof dir, "%s/%s", mods, fam ? fam : "");
+            if (fam && strcmp(fam, "nintendo") && !stat(dir, &st) && S_ISDIR(st.st_mode)) {
+                strlcpy(mod, dir, sizeof mod);
+                LOG("button mod: %s (%s) → %s", fam, forced ? "DM_BUTTONS" : "the connected controller", dir);
+            } else LOG("button mod: none, the game's own buttons (%s)", !fam ? (forced ? "DM_BUTTONS/DM_BOTOES names no family" : "no Xbox or PlayStation controller connected at start") : !strcmp(fam, "nintendo") ? "a Nintendo controller" : "no folder for that family");
+        }
+    }
+    static char roots[4096]; roots[0] = 0;
+    const char *manual = getenv("DM_ROMFS_OVERLAY");
+    if (manual) strlcpy(roots, manual, sizeof roots);
+    if (mod[0]) { if (roots[0]) strlcat(roots, ":", sizeof roots); strlcat(roots, mod, sizeof roots); }
+    return roots[0] ? roots : NULL;
+}
 // A path on an image mount: returns 1 with the mount in *mi and the entry in *k (-1 with errno set when there is none); 0 for a path on any other mount, or one an overlay folder (DM_ROMFS_OVERLAY) has, which then opens as a host file
 static int img_path(const char *p, int *mi, int64_t *k) {
     PATH_LOCK(); char fwd[1024]; p = fwd_slashes(p, fwd, sizeof fwd); const char *c = p ? strchr(p, ':') : NULL; if (!c) return 0;
@@ -202,7 +231,7 @@ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
     g_mnt[g_nmnt].txn_root = -1;
     atomic_store(&g_mnt[g_nmnt].poison, 0);
     atomic_store(&g_mnt[g_nmnt].first_write_ns, 0);
-    const char *overlay = !strcmp(name, "rom") ? getenv("DM_ROMFS_OVERLAY") : NULL;
+    const char *overlay = !strcmp(name, "rom") ? rom_overlay_env() : NULL;
     if (overlay) strlcpy(g_mnt[g_nmnt].overlay, overlay, sizeof g_mnt[0].overlay);
     // The transaction directory cannot be set up (leftovers cannot be cleared / clone failed, which really happens on a full disk): do not exit; mount the committed directory read-only -- saves still read, every write fails, commits are no-ops, the committed version is untouched, and the front end is told
     // (each of these three failures used to call die: with the phone's storage full the game exited as soon as it mounted its saves)
@@ -529,7 +558,7 @@ HLE_FORCE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", "fsp-srv; rom reads the host d
 HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory", Result, h_fs_MountRom, const char *name, void *cache, size_t sz) { dm_thread_service_request();
     (void)cache; (void)sz; char b[1024];
     Result r = mount(name, envdir("DM_ROMFS", "romfs", b, sizeof b), 1);
-    const char *overlay = getenv("DM_ROMFS_OVERLAY");
+    const char *overlay = rom_overlay_env();
     if (r == RES_OK && overlay) {
         PATH_LOCK();
         for (int i = 0; i < g_nmnt; i++) if (mnt_named(&g_mnt[i], name)) {

@@ -63,6 +63,10 @@ Run headless, `DM_CTL` at a control file. The work folder has `boot.sh <secs> <l
 
 From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. From `save_ref`: at about 58 s `A~0.2`, 5 s later `A~0.2` (Load), 30 s later three `A~0.1` 3 s apart, then 12 s to the bridge outside Link's house. There `LUp~3.5`, `A~0.2` (Climb Down) and `LDown~4` three or four times reach the village floor.
 
+## Button overlays (fork)
+
+This fork adds Xbox and PlayStation button overlays ([docs/oot-buttons.md](../../../docs/oot-buttons.md), ported from [Flavio's fork](https://github.com/flaviopz/nxnative)): `button_mods/make_mods.py` builds two RomFS overlays (`xbox/`, `ps/`) from the player's own RomFS — the symbol font's button glyphs, the HUD and ocarina button textures, and the "Controles básicos" controller art and callout lines — which the Mac app packs as `Resources/button_mods`. The host picks one by the gamepad connected at start (`DM_BUTTON_MODS`; `DM_BUTTONS` / `DM_BOTOES` forces it), after `DM_ROMFS_OVERLAY`. Current: not yet validated in play on this branch.
+
 ## Open
 
 - Resolved: the build left 9 shaders out. Six foliage compute shaders used `ATOMG.CAS` ([Global memory: descriptors, ATOMG.CAS, INC / DEC](../../../docs/reference/shaders.md#global-memory-descriptors-atomgcas-inc--dec)); `1f78730053feb036` and `e172bd7ec218ab8e` nest 259 brackets ([Bracket nesting past the front end's 256](../../../docs/reference/shaders.md#bracket-nesting-past-the-front-ends-256)); `68bbe98b3bfd9876` (`Ampere instruction 481 at 0x0`) and five more map rows were no shaders at all ([A control section's words read as a BAHS entry](../../../docs/reference/shaders.md#a-control-sections-words-read-as-a-bahs-entry)), now gone from the map. None of the eight real ones was used on the walk to Kokiri Forest.

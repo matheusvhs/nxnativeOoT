@@ -400,6 +400,43 @@ class PackReuse(unittest.TestCase):
         self.assertEqual((tmp / 'Contents/id').read_text(), 'old')
         self.assertFalse(aside.exists())
 
+    def test_button_mods_copied_and_changes_invalidate(self):   # Resources/button_mods: one RomFS overlay per controller family (the launcher makes it DM_BUTTON_MODS)
+        (self.tmp / 'bmods/xbox').mkdir(parents=True); (self.tmp / 'bmods/xbox/f').write_text('x')
+        (self.tmp / 'bmods/ps').mkdir(); (self.tmp / 'bmods/ps/f').write_text('p')
+        self.args.button_mods = str(self.tmp / 'bmods')
+        self.pack()
+        res = Path(self.args.out) / 'Contents/Resources/button_mods'
+        self.assertEqual(sorted(p.name for p in res.iterdir()), ['ps', 'xbox'])
+        self.assertEqual((res / 'xbox/f').read_text(), 'x')
+        self.assert_reused()
+        (self.tmp / 'bmods/xbox/f').write_text('changed'); self.assert_repacked()
+        self.assertEqual((res / 'xbox/f').read_text(), 'changed')
+        (self.tmp / 'bmods/ps/new').write_text('new'); self.assert_repacked()
+        self.assertEqual((res / 'ps/new').read_text(), 'new')
+        self.args.button_mods = None; self.assert_repacked()
+        self.assertFalse(res.exists())
+
+    def test_button_mods_probed_and_counted(self):   # its tree counts in the free-space check when it cannot clone, like aoc/'s
+        (self.tmp / 'bmods/xbox').mkdir(parents=True); (self.tmp / 'bmods/xbox/f').write_text('x')
+        a = types.SimpleNamespace(**vars(self.args)); a.out = str(self.tmp / 'Mods.app'); a.button_mods = str(self.tmp / 'bmods')
+        romfs, probed, counted = (self.tmp / 'romfs').resolve(), [], []
+        def can_clone(src, dst): probed.append(src); return src == romfs
+        def tree_bytes(d): counted.append(d); return 0
+        lists = sum(p.stat().st_size for d, pats in (('patched', pack_app.MODULE_FILES), ('msl', pack_app.MSL_FILES), ('pso', pack_app.PSO_FILES))
+                    for pat in pats for p in (self.tmp / d).glob(pat) if p.is_file() and p.name != '_b_build.json')
+        with mock.patch.object(pack_app, 'can_clone', can_clone), mock.patch.object(pack_app, 'tree_bytes', tree_bytes), \
+             mock.patch.object(shutil, 'disk_usage', lambda p: types.SimpleNamespace(free=(1 << 30) + lists - 1)), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(SystemExit, 'the app needs'): pack_app.pack(a)
+        self.assertIn((self.tmp / 'bmods').resolve(), probed)
+        self.assertIn((self.tmp / 'bmods').resolve(), counted)
+        self.assertFalse(Path(a.out).exists())
+
+    def test_missing_button_mods_fails_before_copying(self):
+        a = types.SimpleNamespace(**vars(self.args)); a.out = str(self.tmp / 'NoMods.app'); a.button_mods = str(self.tmp / 'no-such-dir')
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(SystemExit, 'no button_mods directory'):
+            pack_app.pack(a)
+        self.assertFalse(Path(a.out).exists())
+
     def test_failed_key_write_rolls_back_app_and_drops_key(self):
         self.pack(); before = (Path(self.args.out) / 'Contents/Info.plist').read_bytes()
         self.args.name = 'changed'
@@ -708,6 +745,17 @@ class App(unittest.TestCase):
         self.assertTrue((self.tmp / 'Copy.app/Contents/Resources/romfs/region_common/audio/edward.bfsar').is_file())
         self.assertFalse((self.tmp / 'Copy.app/Contents/stale').exists()); self.assertFalse((self.tmp / 'Copy.app/Contents/Resources/AppIcon.icns').exists())
 
+    def test_button_mods_env(self):   # Resources/button_mods reaches the host as DM_BUTTON_MODS; an app without it leaves the variable unset
+        bmods = self.tmp / 'bmods'; (bmods / 'xbox').mkdir(parents=True); (bmods / 'xbox/f').write_text('x')
+        a = types.SimpleNamespace(**vars(self.args)); a.out = str(self.tmp / 'Mods.app'); a.icon = None; a.button_mods = str(bmods)
+        with mock.patch.object(pack_app, 'sign', lambda *x: None), mock.patch('sys.stdout'): pack_app.pack(a)
+        p = self.launch(app=self.tmp / 'Mods.app'); p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 7)
+        self.assertEqual(self.host_run()['DM_BUTTON_MODS'], str(self.tmp / 'Mods.app/Contents/Resources/button_mods'))
+        p = self.launch(); p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 7)
+        self.assertNotIn('DM_BUTTON_MODS', self.host_run())
+
 
 class Script(unittest.TestCase):
     def test_options(self):
@@ -737,6 +785,7 @@ class Script(unittest.TestCase):
             on_line(f'app: {out}')
         g = types.SimpleNamespace(table=lambda n: tmp / 'profile' / n, get={'app_category': 'public.app-category.games', 'romfs_marker': 'a/b'}.get)
         g.id = '01008CF01BAAC000'
+        g.dir = kw.get('gdir')   # the profile folder; a button_mods/make_mods.py under it is the button-overlay generator (None: this game has none)
         self.prog = mock.Mock()
         with mock.patch.object(nsp, 'run', fake_run), mock.patch.object(nsp, 'PROG', self.prog), mock.patch.object(nsp, 'chain_of', lambda repo: '0123456789ab'), \
              mock.patch.object(nsp, 'mac_gpu_arch', lambda *a: 'applegpu_g14s'), mock.patch.object(nsp, 'say', self.said.append):
@@ -798,6 +847,32 @@ class Script(unittest.TestCase):
         with mock.patch.object(nsp, 'say', said.append), mock.patch.object(nsp, 'PROG', mock.Mock()):
             w = nsp.IpaWatch(REPO, tmp, tmp / 'G.ipa'); w.line('[12:00:00] pso_offline: g18p: metal-tt'); w.line('[12:00:01] [RED] pipeline archive: pso_offline.py failed')
         self.assertEqual(said, ['[RED] pipeline archive: pso_offline.py failed'])
+
+    def generator(self, tmp, body):   # the profile's button_mods/make_mods.py, run for real (it is subprocess.run, not run)
+        d = tmp / 'profile/button_mods'; d.mkdir(parents=True, exist_ok=True)
+        (d / 'make_mods.py').write_text(body)
+        return tmp / 'profile'
+
+    def test_button_mods_command(self):
+        o, tmp = self.pack_cmd('nvn')
+        self.assertNotIn('--button-mods', o)   # no profile folder, no generator
+        prof = tmp / 'profile'; prof.mkdir()
+        o, _ = self.pack_cmd('nvn', work=tmp, gdir=prof)
+        self.assertNotIn('--button-mods', o)   # a profile without the generator, as every game but Ocarina of Time
+        prof = self.generator(tmp, "import os, sys\nos.makedirs(os.path.join(sys.argv[2], 'xbox'), exist_ok=True)\nopen(os.path.join(sys.argv[2], 'xbox', 'f'), 'w').write('x')\nprint('button mods: generated')\n")
+        o, _ = self.pack_cmd('nvn', work=tmp, gdir=prof)
+        self.assertEqual(o['--button-mods'], str(tmp / 'button_mods'))   # its output folder goes to pack_app.py
+        self.assertIn('button mods: generated', self.said)
+
+    def test_button_mods_generator_skip_and_failure(self):
+        tmp = Path(tempfile.mkdtemp(dir=TEST_ROOT)); self.addCleanup(shutil.rmtree, tmp)
+        prof = self.generator(tmp, "import sys\nprint('button mods skipped: python packages missing (numpy); pip install numpy and build again')\nsys.exit(2)\n")
+        o, _ = self.pack_cmd('nvn', work=tmp, gdir=prof)
+        self.assertNotIn('--button-mods', o)   # exit 2: missing packages, skipped with its note shown
+        self.assertIn('button mods skipped: python packages missing (numpy); pip install numpy and build again', self.said)
+        self.generator(tmp, "import sys\nsys.exit('button mod xbox failed: boom')\n")
+        with self.assertRaisesRegex(nsp.BuildError, 'button mods failed'):
+            self.pack_cmd('nvn', work=tmp, gdir=prof)   # any other exit: the build stops
 
     def test_run_not_fatal_returns_the_exit_code(self):
         log = Path(tempfile.mkdtemp(dir=TEST_ROOT)); self.addCleanup(shutil.rmtree, log)
@@ -930,6 +1005,17 @@ class SeenShaders(unittest.TestCase):   # --seen-shaders: the keys, the partial 
         lib = str(self.sh / f'partial/b-{self.CHAIN}')
         pso = next(c for c in ran if c[1].endswith('pso_offline.py')); pack = ran[-1]
         self.assertEqual(pso[pso.index('--msl') + 1], lib); self.assertEqual(pack[pack.index('--msl') + 1], lib)
+
+
+class ButtonModSources(unittest.TestCase):
+    """Ocarina of Time's button-mod generator sources compile: a syntax slip in one failed the app build's last stage once (no game data needed)."""
+    def test_compile(self):
+        d = REPO / 'dm/games/0400486024DEC000/button_mods'
+        srcs = sorted(d.glob('*.py'))
+        self.assertTrue(srcs, d)
+        for p in srcs:
+            with self.subTest(file=p.name):
+                compile(p.read_text(), str(p), 'exec')
 
 
 if __name__ == '__main__':
